@@ -93,6 +93,20 @@
             color: var(--text-secondary);
             font-size: 14px;
         }
+
+        .hw-button-banner {
+            margin: 12px 16px;
+            padding: 12px 16px;
+            border-radius: 8px;
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffc107;
+        }
+        [data-theme="dark"] .hw-button-banner {
+            background: #3d3510;
+            color: #fce69b;
+            border-color: #997a00;
+        }
     </style>
     <script>
         async function deletePluginInstance(playlistName, pluginId, pluginInstance) {
@@ -359,6 +373,35 @@
             playlistRefreshManager.close();
         }
 
+        async function saveHardwareButton(selectEl, playlistName, pluginId, instanceName) {
+            const prev = selectEl.dataset.previousValue || "";
+            const value = selectEl.value || "";
+            try {
+                const response = await fetch("{{ url_for('playlist.set_instance_hardware_button') }}", {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        playlist_name: playlistName,
+                        plugin_id: pluginId,
+                        plugin_instance: instanceName,
+                        hardware_button: value || null,
+                    }),
+                });
+                const result = await response.json();
+                if (!response.ok) {
+                    showResponseModal("failure", result.error || "Failed to save hardware button");
+                    selectEl.value = prev;
+                    return;
+                }
+                selectEl.dataset.previousValue = selectEl.value;
+                sessionStorage.setItem("storedMessage", JSON.stringify({ type: "success", text: result.message || "Saved." }));
+                location.reload();
+            } catch (e) {
+                showResponseModal("failure", String(e));
+                selectEl.value = prev;
+            }
+        }
+
         async function saveRefreshSettings() {
             await playlistRefreshManager.submit(async (formData) => {
                 const data = new FormData();
@@ -397,6 +440,13 @@
         </div>
         <div class="separator"></div>
 
+        {% if hardware_button_duplicate %}
+        <div class="hw-button-banner" role="alert">
+            <strong>Hardware button conflict:</strong> the same letter (A–D) is assigned more than once.
+            Only the <em>first</em> assignment is used at runtime. Fix the duplicates below.
+        </div>
+        {% endif %}
+
         <!-- Playlists Container -->
         <div class="playlist-list">
             {% for playlist in playlist_config.playlists %}
@@ -408,6 +458,7 @@
                     <!-- Plugin List -->
                     <div class="plugin-list">
                         {% for plugin_instance in playlist.plugins %}
+                        {% set row_key = playlist.name + '|' + plugin_instance.plugin_id + '|' + plugin_instance.name %}
                         <div class="plugin-item">
                             <div class="plugin-info" id="{{plugin_instance.name}}">
                                 <img src="{{ url_for('plugin.image', plugin_id=plugin_instance.plugin_id, filename='icon.png') }}" alt="Plugin Icon" class="plugin-icon">
@@ -431,7 +482,23 @@
                                 <span class="displayed-now">Displayed Now</span>
                                 {% endif %}
                                 <div id="loadingIndicator" class="loading-indicator small left-align"></div>
-
+                                <label class="form-label" style="margin-left:8px;align-items:center;display:inline-flex;gap:6px;font-size:0.9rem;">
+                                    HW Btn
+                                    <select
+                                        class="form-input"
+                                        style="width:auto;min-width:4.5rem;padding:4px 8px;"
+                                        title="Physical button on Inky Impression (modes A/B in Settings)"
+                                        data-previous-value="{{ plugin_instance.get('hardware_button', '') }}"
+                                        onchange="saveHardwareButton(this, {{ playlist.name|tojson }}, {{ plugin_instance.plugin_id|tojson }}, {{ plugin_instance.name|tojson }});">
+                                        <option value="" {% if not plugin_instance.get('hardware_button') %}selected{% endif %}>—</option>
+                                        {% for L in hardware_button_labels %}
+                                        <option value="{{ L }}"
+                                            {% if plugin_instance.get('hardware_button') == L %}selected{% endif %}
+                                            {% if not hardware_button_duplicate and hardware_button_claims.get(L) and hardware_button_claims[L] != row_key %}disabled{% endif %}
+                                        >{{ L }}</option>
+                                        {% endfor %}
+                                    </select>
+                                </label>
                             </div>
                             <div class="plugin-actions">
                                 {% if plugin_instance.latest_refresh_time %}

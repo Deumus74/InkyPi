@@ -1,5 +1,8 @@
 from flask import Blueprint, request, jsonify, current_app, render_template
 from utils.time_utils import calculate_seconds
+from utils.device_config_normalize import hardware_button_claims_first_win
+from model import HARDWARE_BUTTON_LABELS
+from hardware.inky_impression_buttons import restart_hardware_buttons_if_active
 import json
 from datetime import datetime, timedelta
 import os
@@ -73,13 +76,73 @@ def playlists():
     playlist_manager = device_config.get_playlist_manager()
     refresh_info = device_config.get_refresh_info()
     plugins_list = device_config.get_plugins()
+    hb_claims = hardware_button_claims_first_win(playlist_manager)
+    seen = set()
+    duplicate_hw_button = False
+    for pl in playlist_manager.playlists:
+        for inst in pl.plugins:
+            lbl = inst.hardware_button
+            if not lbl:
+                continue
+            if lbl in seen:
+                duplicate_hw_button = True
+                break
+            seen.add(lbl)
+        if duplicate_hw_button:
+            break
 
     return render_template(
         'playlist.html',
         playlist_config=playlist_manager.to_dict(),
         refresh_info=refresh_info.to_dict(),
-        plugins={p["id"]: p for p in plugins_list}
+        plugins={p["id"]: p for p in plugins_list},
+        hardware_button_claims=hb_claims,
+        hardware_button_duplicate=duplicate_hw_button,
+        hardware_button_labels=list(HARDWARE_BUTTON_LABELS),
     )
+
+
+@playlist_bp.route("/set_instance_hardware_button", methods=["PUT"])
+def set_instance_hardware_button():
+    device_config = current_app.config["DEVICE_CONFIG"]
+    playlist_manager = device_config.get_playlist_manager()
+    data = request.get_json() or {}
+    playlist_name = data.get("playlist_name")
+    plugin_id = data.get("plugin_id")
+    instance_name = data.get("plugin_instance")
+    raw = data.get("hardware_button")
+    if raw is None or str(raw).strip() == "":
+        label = None
+    else:
+        label = str(raw).strip().upper()
+        if label not in HARDWARE_BUTTON_LABELS:
+            return jsonify({"error": "hardware_button must be A, B, C, or D, or empty."}), 400
+
+    playlist = playlist_manager.get_playlist(playlist_name)
+    if not playlist:
+        return jsonify({"error": "Playlist not found"}), 400
+    pi = playlist.find_plugin(plugin_id, instance_name)
+    if not pi:
+        return jsonify({"error": "Plugin instance not found"}), 400
+
+    if label:
+        for pl in playlist_manager.playlists:
+            for inst in pl.plugins:
+                if pl.name == playlist_name and inst.plugin_id == plugin_id and inst.name == instance_name:
+                    continue
+                if inst.hardware_button == label:
+                    return jsonify(
+                        {"error": f'Button "{label}" is already assigned elsewhere. Clear it first.'}
+                    ), 400
+
+    pi.hardware_button = label
+    device_config.write_config()
+
+    refresh_task = current_app.config["REFRESH_TASK"]
+    refresh_task.signal_config_change()
+    restart_hardware_buttons_if_active()
+
+    return jsonify({"success": True, "message": "Hardware button updated."})
 
 @playlist_bp.route('/create_playlist', methods=['POST'])
 def create_playlist():

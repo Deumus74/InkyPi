@@ -1,6 +1,8 @@
 from flask import Blueprint, request, jsonify, current_app, render_template, Response
 from utils.time_utils import calculate_seconds
 from datetime import datetime, timedelta
+from model import PLAYLIST_SCHEDULE_MODES, PLAYLIST_SCHEDULE_MODE_SCHEDULE_ONLY
+from hardware.inky_impression_buttons import restart_hardware_buttons_if_active
 import os
 import pytz
 import logging
@@ -52,6 +54,10 @@ def save_settings():
         if plugin_cycle_interval_seconds > 86400 or plugin_cycle_interval_seconds <= 0:
             return jsonify({"error": "Plugin cycle interval must be less than 24 hours"}), 400
 
+        playlist_schedule_mode = form_data.get("playlistScheduleMode") or PLAYLIST_SCHEDULE_MODE_SCHEDULE_ONLY
+        if playlist_schedule_mode not in PLAYLIST_SCHEDULE_MODES:
+            return jsonify({"error": "Invalid playlist schedule mode"}), 400
+
         settings = {
             "name": form_data.get("deviceName"),
             "orientation": form_data.get("orientation"),
@@ -69,12 +75,19 @@ def save_settings():
         }
         if "inky_saturation" in form_data:
             settings["image_settings"]["inky_saturation"] = float(form_data.get("inky_saturation", "0.5"))
+        playlist_manager = device_config.get_playlist_manager()
+        previous_mode = playlist_manager.playlist_schedule_mode
+        playlist_manager.playlist_schedule_mode = playlist_schedule_mode
+
         device_config.update_config(settings)
 
-        if plugin_cycle_interval_seconds != previous_interval_seconds:
-            # wake the background thread up to signal interval config change
-            refresh_task = current_app.config['REFRESH_TASK']
+        refresh_task = current_app.config['REFRESH_TASK']
+        if playlist_schedule_mode != previous_mode:
+            refresh_task.sync_playlist_schedule_mode_state()
+
+        if plugin_cycle_interval_seconds != previous_interval_seconds or playlist_schedule_mode != previous_mode:
             refresh_task.signal_config_change()
+        restart_hardware_buttons_if_active()
     except RuntimeError as e:
         return jsonify({"error": str(e)}), 500
     except Exception as e:

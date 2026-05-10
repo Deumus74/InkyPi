@@ -176,6 +176,26 @@
                     </div>
                 </div>
                 <div class="form-group">
+                    <label class="form-label">Hardware buttons &amp; playlists (Inky Impression):</label>
+                    <p style="font-size: 0.9em; opacity: 0.85; margin: 0 0 0.5rem 0;">
+                        Assign buttons A–D per plugin instance on the Playlists page. GPIO pins: optional <code>hardware_buttons.gpios</code> in device.json.
+                    </p>
+                    {% set psm = (device_settings.get('playlist_config') or {}).get('playlist_schedule_mode') %}
+                    {% set psm_eff = psm or 'schedule_only' %}
+                    <label style="display: block; margin: 0.35rem 0;">
+                        <input type="radio" name="playlistScheduleMode" value="schedule_only" {% if psm_eff == 'schedule_only' %}checked{% endif %}>
+                        <strong>C — Schedule only</strong> — time-based playlists only; physical buttons ignored.
+                    </label>
+                    <label style="display: block; margin: 0.35rem 0;">
+                        <input type="radio" name="playlistScheduleMode" value="schedule_with_button_override" {% if psm_eff == 'schedule_with_button_override' %}checked{% endif %}>
+                        <strong>B — Schedule + button override</strong> — timed rotation; a button temporarily switches playlist until the next scheduled playlist change.
+                    </label>
+                    <label style="display: block; margin: 0.35rem 0;">
+                        <input type="radio" name="playlistScheduleMode" value="exclusive_schedule" {% if psm_eff == 'exclusive_schedule' %}checked{% endif %}>
+                        <strong>A — Buttons only (no schedule switching)</strong> — only the playlist last chosen by a button rotates; timed playlist window changes are ignored.
+                    </label>
+                </div>
+                <div class="form-group">
                     <div class="form-group">
                         <label for="interval">Plugin Cycle Interval:</label>
                         <span title="Determines how often the display switches to a new plugin.">ⓘ</span>
