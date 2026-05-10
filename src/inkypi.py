@@ -33,6 +33,7 @@ from blueprints.apikeys import apikeys_bp
 from jinja2 import ChoiceLoader, FileSystemLoader
 from plugins.plugin_registry import load_plugins
 from waitress import serve
+from hardware.inky_impression_buttons import InkyImpressionButtons
 
 
 logger = logging.getLogger(__name__)
@@ -89,6 +90,9 @@ if __name__ == '__main__':
     # start the background refresh task
     refresh_task.start()
 
+    impression_buttons = InkyImpressionButtons(device_config, refresh_task, dev_mode=DEV_MODE)
+    impression_buttons.start()
+
     # display default inkypi image on startup
     if device_config.get_config("startup") is True:
         logger.info("Startup flag is set, displaying startup image")
@@ -114,4 +118,5 @@ if __name__ == '__main__':
 
         serve(app, host="0.0.0.0", port=PORT, threads=1)
     finally:
+        impression_buttons.stop()
         refresh_task.stop()
