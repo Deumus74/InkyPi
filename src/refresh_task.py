@@ -127,8 +127,11 @@ class RefreshTask:
 
                         refresh_info = refresh_action.get_refresh_info()
                         refresh_info.update({"refresh_time": current_dt.isoformat(), "image_hash": image_hash})
-                        # check if image is the same as current image
-                        if image_hash != latest_refresh.image_hash:
+                        force_redisplay = (
+                            isinstance(refresh_action, PlaylistRefresh) and getattr(refresh_action, "force", False)
+                        )
+                        # Periodic refresh skips unchanged hashes; playlist/hw override must repaint even if identical.
+                        if force_redisplay or image_hash != latest_refresh.image_hash:
                             logger.info(f"Updating display. | refresh_info: {refresh_info}")
                             self.display_manager.display_image(image, image_settings=plugin.config.get("image_settings", []))
                         else:
