@@ -250,6 +250,11 @@ class InkyImpressionButtons:
         return _on_press
 
     def _handle_press(self, label, playlist_name, plugin_id, plugin_instance_name):
+        """Apply playlist override under lock; run refresh on a worker so gpiod can keep reading edges.
+
+        Calling ``manual_update`` from the gpiod poll thread blocks that thread for the full E-Ink update;
+        no further button events are processed until then (kernel buffer can overflow; logs look idle).
+        """
         with self._press_lock:
             try:
                 pm = self.device_config.get_playlist_manager()
@@ -269,9 +274,24 @@ class InkyImpressionButtons:
                     return
 
                 self.refresh_task.apply_hardware_button_press(playlist, plugin_instance)
-                self.refresh_task.manual_update(PlaylistRefresh(playlist, plugin_instance, force=True))
+            except Exception:
+                logger.exception("Hardware button %s: failed to apply playlist state.", label)
+                return
+
+        pl, inst = playlist, plugin_instance
+
+        def _run_refresh():
+            try:
+                self.refresh_task.manual_update(PlaylistRefresh(pl, inst, force=True))
             except Exception:
                 logger.exception("Hardware button %s: refresh failed.", label)
+
+        logger.info("Hardware button %s: refresh started (async).", label)
+        threading.Thread(
+            target=_run_refresh,
+            daemon=True,
+            name=f"inky-hw-btn-{label}",
+        ).start()
 
     def stop(self):
         self._stop_gpiod()
