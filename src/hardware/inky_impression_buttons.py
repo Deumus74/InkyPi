@@ -1,22 +1,41 @@
 """
-GPIO buttons on Pimoroni Inky Impression (A–D): switch to a configured playlist plugin instance.
+GPIO buttons on Pimoroni Inky Impression (A–D): map from plugin instances'
+``hardware_button`` field; pins from ``device.json`` → hardware_buttons.gpios.
 
-BCM pins default to 5, 6, 16, 24 (top to bottom), active low with pull-up — see Pimoroni inky examples/7color/buttons.py.
+BCM defaults 5, 6, 16, 24 (top to bottom), active low with pull-up —
+see Pimoroni inky examples/7color/buttons.py.
 """
 
 import logging
 import threading
 
 from refresh_task import PlaylistRefresh
+from model import (
+    HARDWARE_BUTTON_LABELS,
+    PLAYLIST_SCHEDULE_MODE_SCHEDULE_ONLY,
+)
+from utils.device_config_normalize import gpios_from_config, hardware_button_assignments
 
 logger = logging.getLogger(__name__)
 
-# Default BCM GPIO per button A, B, C, D (Inky Impression on 40-pin header)
-DEFAULT_BUTTON_GPIOS = (5, 6, 16, 24)
+_active_controller = None
+
+
+def set_active_button_controller(controller):
+    """Called from inkypi main so saves can hot-replug GPIO handlers."""
+    global _active_controller
+    _active_controller = controller
+
+
+def restart_hardware_buttons_if_active():
+    ctrl = _active_controller
+    if ctrl:
+        ctrl.stop()
+        ctrl.start()
 
 
 class InkyImpressionButtons:
-    """Attach gpiozero handlers when enabled; no-op if disabled, wrong display, or import fails."""
+    """Attach gpiozero handlers when schedule mode allows and instances are bound."""
 
     def __init__(self, device_config, refresh_task, dev_mode=False):
         self.device_config = device_config
@@ -34,8 +53,14 @@ class InkyImpressionButtons:
             logger.debug("Hardware buttons skipped (display_type is not inky).")
             return
 
-        hb = self.device_config.get_config("hardware_buttons", default=None)
-        if not hb or not hb.get("enabled"):
+        pm = self.device_config.get_playlist_manager()
+        if pm.playlist_schedule_mode == PLAYLIST_SCHEDULE_MODE_SCHEDULE_ONLY:
+            logger.debug("Hardware buttons skipped (playlist_schedule_mode is schedule_only).")
+            return
+
+        assignments = hardware_button_assignments(pm)
+        if not assignments:
+            logger.debug("No hardware_button assignments on plugin instances; skipping GPIO.")
             return
 
         try:
@@ -44,78 +69,66 @@ class InkyImpressionButtons:
             logger.warning("gpiozero not available; hardware buttons disabled.")
             return
 
-        bindings = hb.get("bindings") or []
-        if not bindings:
-            logger.warning("hardware_buttons.enabled is true but bindings is empty; no buttons registered.")
-            return
+        hb = self.device_config.get_config("hardware_buttons") or {}
+        pin_by_label = gpios_from_config(hb)
 
-        for i, pin in enumerate(DEFAULT_BUTTON_GPIOS):
-            if i >= len(bindings):
-                break
-            b = bindings[i]
-            if not isinstance(b, dict):
-                continue
-            playlist = (b.get("playlist") or "").strip()
-            plugin_id = (b.get("plugin_id") or "").strip()
-            instance = (b.get("plugin_instance") or "").strip()
-            if not (playlist and plugin_id and instance):
-                logger.info("Hardware button %s: empty binding, skipping.", chr(ord("A") + i))
-                continue
+        assignment_by_label = {lbl: (pname, pid, inst) for lbl, pname, pid, inst in assignments}
 
-            gpio = b.get("gpio", pin)
-            try:
-                gpio = int(gpio)
-            except (TypeError, ValueError):
-                logger.warning("Hardware button %s: invalid gpio %r, using default %s.", chr(ord("A") + i), b.get("gpio"), pin)
-                gpio = pin
+        for label in HARDWARE_BUTTON_LABELS:
+            if label not in assignment_by_label:
+                continue
+            playlist_name, plugin_id, plugin_instance_name = assignment_by_label[label]
+            gpio = pin_by_label[label]
 
             try:
                 btn = Button(gpio, pull_up=True, bounce_time=0.3)
             except Exception:
-                logger.exception("Failed to open GPIO %s for button %s.", gpio, chr(ord("A") + i))
+                logger.exception("Failed to open GPIO %s for button %s.", gpio, label)
                 continue
 
-            btn.when_pressed = self._make_handler(i, playlist, plugin_id, instance)
+            btn.when_pressed = self._make_handler(label, playlist_name, plugin_id, plugin_instance_name)
             self._buttons.append(btn)
             logger.info(
                 "Hardware button %s (GPIO %s) -> playlist=%r plugin_id=%r instance=%r",
-                chr(ord("A") + i),
+                label,
                 gpio,
-                playlist,
+                playlist_name,
                 plugin_id,
-                instance,
+                plugin_instance_name,
             )
 
         if not self._buttons:
-            logger.warning("No hardware buttons were registered (check bindings and GPIO).")
+            logger.warning("No hardware buttons registered.")
 
-    def _make_handler(self, index, playlist_name, plugin_id, plugin_instance_name):
+    def _make_handler(self, label, playlist_name, plugin_id, plugin_instance_name):
         def _on_press():
-            self._handle_press(index, playlist_name, plugin_id, plugin_instance_name)
+            self._handle_press(label, playlist_name, plugin_id, plugin_instance_name)
 
         return _on_press
 
-    def _handle_press(self, index, playlist_name, plugin_id, plugin_instance_name):
+    def _handle_press(self, label, playlist_name, plugin_id, plugin_instance_name):
         with self._press_lock:
             try:
                 pm = self.device_config.get_playlist_manager()
                 playlist = pm.get_playlist(playlist_name)
                 if not playlist:
-                    logger.error("Hardware button %s: playlist %r not found.", chr(ord("A") + index), playlist_name)
+                    logger.error("Hardware button %s: playlist %r not found.", label, playlist_name)
                     return
                 plugin_instance = playlist.find_plugin(plugin_id, plugin_instance_name)
                 if not plugin_instance:
                     logger.error(
                         "Hardware button %s: plugin %r instance %r not found in playlist %r.",
-                        chr(ord("A") + index),
+                        label,
                         plugin_id,
                         plugin_instance_name,
                         playlist_name,
                     )
                     return
+
+                self.refresh_task.apply_hardware_button_press(playlist, plugin_instance)
                 self.refresh_task.manual_update(PlaylistRefresh(playlist, plugin_instance, force=True))
             except Exception:
-                logger.exception("Hardware button %s: refresh failed.", chr(ord("A") + index))
+                logger.exception("Hardware button %s: refresh failed.", label)
 
     def stop(self):
         for btn in self._buttons:
