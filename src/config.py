@@ -1,5 +1,6 @@
 import os
 import json
+import tempfile
 import logging
 from dotenv import load_dotenv
 from model import PlaylistManager, RefreshInfo
@@ -60,8 +61,24 @@ class Config:
         logger.debug(f"Writing device config to {self.config_file}")
         self.update_value("playlist_config", self.playlist_manager.to_dict())
         self.update_value("refresh_info", self.refresh_info.to_dict())
-        with open(self.config_file, 'w') as outfile:
-            json.dump(self.config, outfile, indent=4)
+
+        cfg_dir = os.path.dirname(os.path.abspath(self.config_file))
+        os.makedirs(cfg_dir, exist_ok=True)
+
+        txt = json.dumps(self.config, indent=4)
+        fd, tmppath = tempfile.mkstemp(prefix="device_", suffix=".json.tmp", dir=cfg_dir)
+        try:
+            with os.fdopen(fd, "w") as outfile:
+                outfile.write(txt)
+                outfile.flush()
+                os.fsync(outfile.fileno())
+            os.replace(tmppath, self.config_file)
+        finally:
+            if os.path.isfile(tmppath):
+                try:
+                    os.remove(tmppath)
+                except OSError:
+                    pass
 
     def get_config(self, key=None, default={}):
         """Gets the value of a specific configuration key or returns the entire config if none provided."""

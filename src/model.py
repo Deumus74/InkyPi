@@ -362,22 +362,20 @@ class PluginInstance:
         return latest_refresh
     
     def to_dict(self):
-        d = {
+        return {
             "plugin_id": self.plugin_id,
             "name": self.name,
             "plugin_settings": self.settings,
             "refresh": self.refresh,
             "latest_refresh_time": self.latest_refresh_time,
+            "hardware_button": self.hardware_button,
         }
-        if self.hardware_button:
-            d["hardware_button"] = self.hardware_button
-        return d
 
     @classmethod
     def from_dict(cls, data):
         raw = data.get("hardware_button")
         hb = None
-        if raw is not None:
+        if raw is not None and raw != "":
             hb = str(raw).strip().upper() or None
             if hb and hb not in HARDWARE_BUTTON_LABELS:
                 logger.warning("Ignoring unknown hardware_button value %r on instance %s", raw, data.get("name"))

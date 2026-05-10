@@ -106,7 +106,9 @@ def playlists():
 def set_instance_hardware_button():
     device_config = current_app.config["DEVICE_CONFIG"]
     playlist_manager = device_config.get_playlist_manager()
-    data = request.get_json() or {}
+    data = request.get_json(force=True, silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Invalid or empty JSON body"}), 400
     playlist_name = data.get("playlist_name")
     plugin_id = data.get("plugin_id")
     instance_name = data.get("plugin_instance")
@@ -136,7 +138,11 @@ def set_instance_hardware_button():
                     ), 400
 
     pi.hardware_button = label
-    device_config.write_config()
+    try:
+        device_config.write_config()
+    except OSError as e:
+        logger.exception("Failed to persist device.json after hardware_button change.")
+        return jsonify({"error": f"Could not save configuration: {e}"}), 500
 
     refresh_task = current_app.config["REFRESH_TASK"]
     refresh_task.signal_config_change()

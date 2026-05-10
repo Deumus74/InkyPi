@@ -340,6 +340,19 @@
                 sessionStorage.removeItem("storedMessage"); // Clear stored message after displaying
             }
 
+            document.querySelector(".playlist-list")?.addEventListener("change", function (ev) {
+                const sel = ev.target;
+                if (!sel?.classList.contains("hw-button-select")) {
+                    return;
+                }
+                saveHardwareButton(
+                    sel,
+                    sel.dataset.playlist,
+                    sel.dataset.pluginId,
+                    sel.dataset.instance
+                );
+            });
+
             // Add event listeners for refresh settings buttons
             document.querySelectorAll('.refresh-settings-btn').forEach(button => {
                 button.addEventListener('click', function() {
@@ -493,11 +506,13 @@
                                 <label class="form-label" style="margin-left:8px;align-items:center;display:inline-flex;gap:6px;font-size:0.9rem;">
                                     HW Btn
                                     <select
-                                        class="form-input"
+                                        class="form-input hw-button-select"
                                         style="width:auto;min-width:4.5rem;padding:4px 8px;"
                                         title="Physical button on Inky Impression (modes A/B in Settings)"
-                                        data-previous-value="{{ plugin_instance.get('hardware_button', '') }}"
-                                        onchange="saveHardwareButton(this, {{ playlist.name|tojson }}, {{ plugin_instance.plugin_id|tojson }}, {{ plugin_instance.name|tojson }});">
+                                        data-previous-value="{{ plugin_instance.get('hardware_button', '') or '' }}"
+                                        data-playlist="{{ playlist.name|e }}"
+                                        data-plugin-id="{{ plugin_instance.plugin_id|e }}"
+                                        data-instance="{{ plugin_instance.name|e }}">
                                         <option value="" {% if not plugin_instance.get('hardware_button') %}selected{% endif %}>—</option>
                                         {% for L in hardware_button_labels %}
                                         <option value="{{ L }}"
