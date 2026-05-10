@@ -8,6 +8,7 @@ see Pimoroni inky examples/7color/buttons.py.
 
 import logging
 import threading
+import time
 
 from refresh_task import PlaylistRefresh
 from model import (
@@ -55,6 +56,9 @@ class InkyImpressionButtons:
         self._buttons = []
         self._press_lock = threading.Lock()
         self._lifecycle_lock = threading.Lock()
+        self._gpiod_thread = None
+        self._gpiod_stop = None
+        self._gpiod_request = None
 
     def restart_handlers(self):
         with self._lifecycle_lock:
@@ -80,16 +84,18 @@ class InkyImpressionButtons:
             logger.debug("No hardware_button assignments on plugin instances; skipping GPIO.")
             return
 
+        hb = self.device_config.get_config("hardware_buttons") or {}
+        pin_by_label = gpios_from_config(hb)
+        assignment_by_label = {lbl: (pname, pid, inst) for lbl, pname, pid, inst in assignments}
+
+        if self._try_start_gpiod(assignment_by_label, pin_by_label):
+            return
+
         try:
             from gpiozero import Button
         except ImportError:
             logger.warning("gpiozero not available; hardware buttons disabled.")
             return
-
-        hb = self.device_config.get_config("hardware_buttons") or {}
-        pin_by_label = gpios_from_config(hb)
-
-        assignment_by_label = {lbl: (pname, pid, inst) for lbl, pname, pid, inst in assignments}
 
         for label in HARDWARE_BUTTON_LABELS:
             if label not in assignment_by_label:
@@ -116,6 +122,126 @@ class InkyImpressionButtons:
 
         if not self._buttons:
             logger.warning("No hardware buttons registered.")
+
+    def _stop_gpiod(self):
+        thread = self._gpiod_thread
+        request = self._gpiod_request
+        stop_evt = self._gpiod_stop
+        self._gpiod_thread = None
+        self._gpiod_request = None
+        self._gpiod_stop = None
+        if stop_evt is not None:
+            stop_evt.set()
+        if request is not None:
+            for meth in ("release", "close"):
+                if hasattr(request, meth):
+                    try:
+                        getattr(request, meth)()
+                    except Exception:
+                        logger.exception("Error tearing down gpiod request (%s).", meth)
+                    break
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=3.0)
+
+    def _try_start_gpiod(self, assignment_by_label, pin_by_label):
+        """Pi 5 (and newer gpiochip ABI): Pimoroni use gpiod + gpiodevice; gpiozero often fails."""
+        try:
+            import gpiod
+            from gpiod.line import Bias, Direction, Edge
+            import gpiodevice
+        except ImportError:
+            logger.info("gpiod/gpiodevice not installed; using gpiozero for hardware buttons.")
+            return False
+
+        try:
+            chip = gpiodevice.find_chip_by_platform()
+        except Exception:
+            logger.exception("gpiodevice.find_chip_by_platform failed; using gpiozero for hardware buttons.")
+            return False
+
+        input_settings = gpiod.LineSettings(
+            direction=Direction.INPUT,
+            bias=Bias.PULL_UP,
+            edge_detection=Edge.FALLING,
+        )
+
+        line_config = {}
+        offset_handlers = {}
+
+        for label in HARDWARE_BUTTON_LABELS:
+            if label not in assignment_by_label:
+                continue
+            playlist_name, plugin_id, plugin_instance_name = assignment_by_label[label]
+            gpio = pin_by_label[label]
+            try:
+                offset = chip.line_offset_from_id(gpio)
+            except Exception:
+                logger.exception(
+                    "Failed to resolve gpiod line for button %s (GPIO id %s).",
+                    label,
+                    gpio,
+                )
+                continue
+            if offset in line_config:
+                logger.warning("Duplicate gpiod offset %s (label %s); skipping duplicate.", offset, label)
+                continue
+            line_config[offset] = input_settings
+            offset_handlers[offset] = self._make_handler(
+                label, playlist_name, plugin_id, plugin_instance_name
+            )
+            logger.info(
+                "Hardware button %s (GPIO %s, line offset %s) [gpiod] -> playlist=%r plugin_id=%r instance=%r",
+                label,
+                gpio,
+                offset,
+                playlist_name,
+                plugin_id,
+                plugin_instance_name,
+            )
+
+        if not line_config:
+            return False
+
+        try:
+            request = chip.request_lines(consumer="inkypi-hw-buttons", config=line_config)
+        except Exception:
+            logger.exception("gpiod chip.request_lines failed; using gpiozero for hardware buttons.")
+            return False
+
+        self._gpiod_stop = threading.Event()
+        self._gpiod_request = request
+        debounce_last = {}
+
+        def _poll():
+            debounce_s = 0.35
+            while not self._gpiod_stop.is_set():
+                try:
+                    for event in request.read_edge_events():
+                        if self._gpiod_stop.is_set():
+                            break
+                        off = event.line_offset
+                        now = time.monotonic()
+                        if now - debounce_last.get(off, 0.0) < debounce_s:
+                            continue
+                        debounce_last[off] = now
+                        cb = offset_handlers.get(off)
+                        if cb:
+                            cb()
+                        else:
+                            logger.debug("gpiod edge for unmapped line offset %s", off)
+                except Exception:
+                    if not self._gpiod_stop.is_set():
+                        logger.exception("Hardware button gpiod poll failed.")
+                    break
+
+        self._gpiod_thread = threading.Thread(
+            target=_poll,
+            daemon=True,
+            name="inkypi-gpiod-buttons",
+        )
+        self._gpiod_thread.start()
+        logger.info("Hardware buttons: gpiod + gpiodevice listener started.")
+        return True
 
     def _make_handler(self, label, playlist_name, plugin_id, plugin_instance_name):
         def _on_press():
@@ -148,6 +274,8 @@ class InkyImpressionButtons:
                 logger.exception("Hardware button %s: refresh failed.", label)
 
     def stop(self):
+        self._stop_gpiod()
+
         for btn in self._buttons:
             try:
                 btn.close()
