@@ -34,28 +34,28 @@
 
 ## Inky Impression hardware buttons (optional)
 
-Pimoroni **Inky Impression** boards expose four rear buttons (A–D, top to bottom). InkyPi can map each button to a **playlist plugin instance** so a press shows that plugin immediately (same behaviour as **Display** in the web UI).
+Pimoroni **Inky Impression** boards expose four rear buttons (A–D, top to bottom). Configure them in the **Playlists** page: each playlist plugin instance can have **HW Btn** **A**–**D** (or none). A press shows that instance immediately (like **Display** in the web UI) when a mode that uses buttons is active.
 
-1. Edit `src/config/device.json` on the device.
-2. Set `hardware_buttons.enabled` to `true`.
-3. Set `hardware_buttons.bindings` to up to four objects in order **A, B, C, D**. Each object needs:
-   - `playlist`: exact playlist name (e.g. `Default`)
-   - `plugin_id`: plugin id (e.g. `clock`)
-   - `plugin_instance`: exact instance name as shown in the playlist
-4. Optional per button: `gpio` (BCM number). If omitted, defaults are **5, 6, 16, 24** (active low, internal pull-up), matching [Pimoroni’s Inky example](https://github.com/pimoroni/inky/blob/main/examples/7color/buttons.py).
+In **Settings**, choose how buttons interact with **time-based playlists** (`playlist_config.playlist_schedule_mode`):
 
-Example (replace names with your playlist and instances):
+| Mode | Value | Behaviour |
+|------|--------|-----------|
+| **C** | `schedule_only` | Timed playlist rotation only; physical buttons are ignored. |
+| **B** | `schedule_with_button_override` | Timed rotation; a button temporarily switches to that instance’s playlist until the scheduled “winning” playlist changes. |
+| **A** | `exclusive_schedule` | Timed **between-playlist** switching is disabled; only the playlist last chosen by a button is used for rotation (until you press another assigned button). Before the first press, the normal scheduled playlist applies. |
+
+GPIO is only opened when **not** running with `--dev`, `display_type` is `inky`, at least one instance has a hardware button, and the schedule mode is **A** or **B**.
+
+Optional **BCM pin overrides** in `src/config/device.json` (defaults **5, 6, 16, 24** for A–D, active low, internal pull-up — see [Pimoroni’s Inky example](https://github.com/pimoroni/inky/blob/main/examples/7color/buttons.py)):
 
 ```json
 "hardware_buttons": {
-    "enabled": true,
-    "bindings": [
-        { "playlist": "Default", "plugin_id": "clock", "plugin_instance": "Kitchen clock" },
-        { "playlist": "Default", "plugin_id": "weather", "plugin_instance": "Home" },
-        {},
-        {}
-    ]
+    "gpios": { "A": 5, "B": 6, "C": 16, "D": 24 }
 }
 ```
 
-Empty objects skip that physical button. GPIO is only opened when **not** running with `--dev`, `display_type` is `inky`, and `enabled` is true. On **Raspberry Pi 5**, GPIO line numbering can differ; if buttons misbehave, check Pimoroni’s current `gpiod` examples or set explicit `gpio` values for your board revision.
+Omit keys for buttons that should keep the default pin.
+
+**Legacy configs** that used `hardware_buttons.enabled` and `hardware_buttons.bindings` are migrated automatically on load: bindings are applied to the matching plugin instances as `hardware_button`, and an old `playlist_schedule_mode` stored under `hardware_buttons` is moved into `playlist_config`.
+
+On **Raspberry Pi 5**, GPIO line numbering can differ; if buttons misbehave, check Pimoroni’s current documentation or set explicit values in `hardware_buttons.gpios`.
