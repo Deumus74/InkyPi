@@ -7,7 +7,13 @@ import pytz
 from datetime import datetime, timezone
 from plugins.plugin_registry import get_plugin_instance
 from utils.image_utils import compute_image_hash
-from model import RefreshInfo, PlaylistManager
+from model import (
+    PlaylistManager,
+    RefreshInfo,
+    PLAYLIST_SCHEDULE_MODE_EXCLUSIVE_BUTTONS,
+    PLAYLIST_SCHEDULE_MODE_SCHEDULE_ONLY,
+    PLAYLIST_SCHEDULE_MODE_WITH_BUTTON_OVERRIDE,
+)
 from PIL import Image
 
 logger = logging.getLogger(__name__)
@@ -28,6 +34,11 @@ class RefreshTask:
         self.refresh_event = threading.Event()
         self.refresh_event.set()
         self.refresh_result = {}
+
+        self._playlist_state_lock = threading.Lock()
+        self._exclusive_playlist_name = None
+        self._override_playlist_name = None
+        self._override_schedule_baseline_name = None
 
     def start(self):
         """Starts the background thread for refreshing the display."""
@@ -155,14 +166,89 @@ class RefreshTask:
             with self.condition:
                 self.condition.notify_all()
 
+    def reset_hardware_playlist_state(self):
+        """Clear button-driven playlist selection (e.g. when switching to schedule_only)."""
+        with self._playlist_state_lock:
+            self._exclusive_playlist_name = None
+            self._override_playlist_name = None
+            self._override_schedule_baseline_name = None
+
+    def apply_hardware_button_press(self, playlist, plugin_instance=None):
+        """Update internal playlist selection driven by GPIO (modes A/B). Call before manual_update from hardware."""
+        del plugin_instance  # reserved for logging / future use
+        pm = self.device_config.get_playlist_manager()
+        mode = pm.playlist_schedule_mode
+        current_dt = self._get_current_datetime()
+        scheduled = pm.determine_active_playlist(current_dt)
+        sch_name = scheduled.name if scheduled else None
+        with self._playlist_state_lock:
+            if mode == PLAYLIST_SCHEDULE_MODE_EXCLUSIVE_BUTTONS:
+                self._exclusive_playlist_name = playlist.name
+            elif mode == PLAYLIST_SCHEDULE_MODE_WITH_BUTTON_OVERRIDE:
+                self._override_schedule_baseline_name = sch_name
+                self._override_playlist_name = playlist.name
+
+    def sync_playlist_schedule_mode_state(self):
+        """If config mode no longer uses hardware playlist state, clear it."""
+        mode = self.device_config.get_playlist_manager().playlist_schedule_mode
+        if mode == PLAYLIST_SCHEDULE_MODE_SCHEDULE_ONLY:
+            self.reset_hardware_playlist_state()
+
     def _get_current_datetime(self):
         """Retrieves the current datetime based on the device's configured timezone."""
         tz_str = self.device_config.get_config("timezone", default="UTC")
         return datetime.now(pytz.timezone(tz_str))
 
+    def _effective_playlist_for_interval(self, playlist_manager, current_dt):
+        mode = playlist_manager.playlist_schedule_mode
+        scheduled = playlist_manager.determine_active_playlist(current_dt)
+        sch_name = scheduled.name if scheduled else None
+
+        with self._playlist_state_lock:
+            if mode == PLAYLIST_SCHEDULE_MODE_SCHEDULE_ONLY:
+                return scheduled
+
+            if mode == PLAYLIST_SCHEDULE_MODE_EXCLUSIVE_BUTTONS:
+                if self._exclusive_playlist_name:
+                    pl = playlist_manager.get_playlist(self._exclusive_playlist_name)
+                    if pl and pl.plugins:
+                        return pl
+                    self._exclusive_playlist_name = None
+                return scheduled
+
+            if mode == PLAYLIST_SCHEDULE_MODE_WITH_BUTTON_OVERRIDE:
+                ow = self._override_playlist_name
+                baseline = self._override_schedule_baseline_name
+                if ow:
+                    if baseline is not None and sch_name != baseline:
+                        logger.info(
+                            "Clearing playlist button override (schedule winner changed %r -> %r).",
+                            baseline,
+                            sch_name,
+                        )
+                        self._override_playlist_name = None
+                        self._override_schedule_baseline_name = None
+                        ow = None
+                    elif baseline is None and sch_name is not None:
+                        logger.info(
+                            "Clearing playlist button override (schedule became active while overriding with no baseline)."
+                        )
+                        self._override_playlist_name = None
+                        self._override_schedule_baseline_name = None
+                        ow = None
+                if ow:
+                    pl = playlist_manager.get_playlist(ow)
+                    if pl and pl.plugins:
+                        return pl
+                    self._override_playlist_name = None
+                    self._override_schedule_baseline_name = None
+                return scheduled
+
+        return scheduled
+
     def _determine_next_plugin(self, playlist_manager, latest_refresh_info, current_dt):
         """Determines the next plugin to refresh based on the active playlist, plugin cycle interval, and current time."""
-        playlist = playlist_manager.determine_active_playlist(current_dt)
+        playlist = self._effective_playlist_for_interval(playlist_manager, current_dt)
         if not playlist:
             playlist_manager.active_playlist = None
             logger.info(f"No active playlist determined.")
