@@ -5,6 +5,20 @@ from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
+# How hardware buttons interact with time-based playlist switching (stored in playlist_config).
+PLAYLIST_SCHEDULE_MODE_SCHEDULE_ONLY = "schedule_only"
+PLAYLIST_SCHEDULE_MODE_WITH_BUTTON_OVERRIDE = "schedule_with_button_override"
+PLAYLIST_SCHEDULE_MODE_EXCLUSIVE_BUTTONS = "exclusive_schedule"
+
+PLAYLIST_SCHEDULE_MODES = (
+    PLAYLIST_SCHEDULE_MODE_SCHEDULE_ONLY,
+    PLAYLIST_SCHEDULE_MODE_WITH_BUTTON_OVERRIDE,
+    PLAYLIST_SCHEDULE_MODE_EXCLUSIVE_BUTTONS,
+)
+
+HARDWARE_BUTTON_LABELS = ("A", "B", "C", "D")
+
+
 class RefreshInfo:
     """Keeps track of refresh metadata.
 
@@ -67,10 +81,11 @@ class PlaylistManager:
     DEFAULT_PLAYLIST_START = "00:00"
     DEFAULT_PLAYLIST_END = "24:00"
 
-    def __init__(self, playlists=[], active_playlist=None):
+    def __init__(self, playlists=[], active_playlist=None, playlist_schedule_mode=None):
         """Initialize PlaylistManager with a list of playlists."""
         self.playlists = playlists
         self.active_playlist = active_playlist
+        self.playlist_schedule_mode = playlist_schedule_mode or PLAYLIST_SCHEDULE_MODE_SCHEDULE_ONLY
 
     def get_playlist_names(self):
         """Returns a list of all playlist names."""
@@ -146,14 +161,20 @@ class PlaylistManager:
     def to_dict(self):
         return {
             "playlists": [p.to_dict() for p in self.playlists],
-            "active_playlist": self.active_playlist
+            "active_playlist": self.active_playlist,
+            "playlist_schedule_mode": self.playlist_schedule_mode,
         }
 
     @classmethod
     def from_dict(cls, data):
+        mode = data.get("playlist_schedule_mode") or PLAYLIST_SCHEDULE_MODE_SCHEDULE_ONLY
+        if mode not in PLAYLIST_SCHEDULE_MODES:
+            logger.warning("Unknown playlist_schedule_mode %r; using %s", mode, PLAYLIST_SCHEDULE_MODE_SCHEDULE_ONLY)
+            mode = PLAYLIST_SCHEDULE_MODE_SCHEDULE_ONLY
         return cls(
             playlists=[Playlist.from_dict(p) for p in data.get("playlists", [])],
-            active_playlist=data.get("active_playlist")
+            active_playlist=data.get("active_playlist"),
+            playlist_schedule_mode=mode,
         )
 
     @staticmethod
@@ -281,12 +302,13 @@ class PluginInstance:
         latest_refresh (str): ISO-formatted string representing the last refresh time.
     """
 
-    def __init__(self, plugin_id, name, settings, refresh, latest_refresh_time=None):
+    def __init__(self, plugin_id, name, settings, refresh, latest_refresh_time=None, hardware_button=None):
         self.plugin_id = plugin_id
         self.name = name
         self.settings = settings
         self.refresh = refresh
         self.latest_refresh_time = latest_refresh_time
+        self.hardware_button = (hardware_button or "").strip().upper() or None
 
     def update(self, updated_data):
         """Update attributes of the class with the dictionary values."""
@@ -340,20 +362,31 @@ class PluginInstance:
         return latest_refresh
     
     def to_dict(self):
-        return {
+        d = {
             "plugin_id": self.plugin_id,
             "name": self.name,
             "plugin_settings": self.settings,
             "refresh": self.refresh,
             "latest_refresh_time": self.latest_refresh_time,
         }
+        if self.hardware_button:
+            d["hardware_button"] = self.hardware_button
+        return d
 
     @classmethod
     def from_dict(cls, data):
+        raw = data.get("hardware_button")
+        hb = None
+        if raw is not None:
+            hb = str(raw).strip().upper() or None
+            if hb and hb not in HARDWARE_BUTTON_LABELS:
+                logger.warning("Ignoring unknown hardware_button value %r on instance %s", raw, data.get("name"))
+                hb = None
         return cls(
             plugin_id=data["plugin_id"],
             name=data["name"],
             settings=data["plugin_settings"],
             refresh=data["refresh"],
             latest_refresh_time=data.get("latest_refresh_time"),
+            hardware_button=hb,
         )
