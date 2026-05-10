@@ -83,6 +83,12 @@ class RefreshTask:
         """
         while True:
             try:
+                refresh_action = None
+                latest_refresh = None
+                current_dt = None
+                stop_after_iteration = False
+                run_interval_stats = False
+
                 with self.condition:
                     sleep_time = self.device_config.get_config("plugin_cycle_interval_seconds", default=60*60)
 
@@ -93,34 +99,43 @@ class RefreshTask:
 
                     # Exit if `stop()` is called
                     if not self.running:
-                        break
-
-                    playlist_manager = self.device_config.get_playlist_manager()
-                    latest_refresh = self.device_config.get_refresh_info()
-                    current_dt = self._get_current_datetime()
-
-                    refresh_action = None
-                    if self.manual_update_request:
-                        # handle immediate update request
-                        logger.info("Manual update requested")
-                        refresh_action = self.manual_update_request
-                        self.manual_update_request = ()
+                        stop_after_iteration = True
                     else:
+                        playlist_manager = self.device_config.get_playlist_manager()
+                        latest_refresh = self.device_config.get_refresh_info()
+                        current_dt = self._get_current_datetime()
 
-                        if self.device_config.get_config("log_system_stats"):
-                            self.log_system_stats()
+                        if self.manual_update_request:
+                            # handle immediate update request
+                            logger.info("Manual update requested")
+                            refresh_action = self.manual_update_request
+                            self.manual_update_request = ()
+                        else:
+                            run_interval_stats = self.device_config.get_config("log_system_stats")
+                            logger.info(
+                                "Running interval refresh check. | current_time: %s",
+                                current_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                            )
+                            playlist, plugin_instance = self._determine_next_plugin(
+                                playlist_manager, latest_refresh, current_dt
+                            )
+                            if plugin_instance:
+                                refresh_action = PlaylistRefresh(playlist, plugin_instance)
 
-                        # handle refresh based on playlists
-                        logger.info(f"Running interval refresh check. | current_time: {current_dt.strftime('%Y-%m-%d %H:%M:%S')}")
-                        playlist, plugin_instance = self._determine_next_plugin(playlist_manager, latest_refresh, current_dt)
-                        if plugin_instance:
-                            refresh_action = PlaylistRefresh(playlist, plugin_instance)
+                if stop_after_iteration:
+                    break
 
-                    if refresh_action:
-                        plugin_config = self.device_config.get_plugin(refresh_action.get_plugin_id())
-                        if plugin_config is None:
-                            logger.error(f"Plugin config not found for '{refresh_action.get_plugin_id()}'.")
-                            continue
+                if run_interval_stats:
+                    self.log_system_stats()
+
+                # Heavy work runs without holding self.condition so manual_update() can take the lock and
+                # queue another request. After each action we drain manual_update_request under the lock
+                # so wakes that happened during display_image() are not lost.
+                while refresh_action:
+                    plugin_config = self.device_config.get_plugin(refresh_action.get_plugin_id())
+                    if plugin_config is None:
+                        logger.error(f"Plugin config not found for '{refresh_action.get_plugin_id()}'.")
+                    else:
                         plugin = get_plugin_instance(plugin_config)
                         image = refresh_action.execute(plugin, self.device_config, current_dt)
                         image_hash = compute_image_hash(image)
@@ -133,13 +148,24 @@ class RefreshTask:
                         # Periodic refresh skips unchanged hashes; playlist/hw override must repaint even if identical.
                         if force_redisplay or image_hash != latest_refresh.image_hash:
                             logger.info(f"Updating display. | refresh_info: {refresh_info}")
-                            self.display_manager.display_image(image, image_settings=plugin.config.get("image_settings", []))
+                            self.display_manager.display_image(
+                                image, image_settings=plugin.config.get("image_settings", [])
+                            )
                         else:
                             logger.info(f"Image already displayed, skipping refresh. | refresh_info: {refresh_info}")
 
                         # update latest refresh data in the device config
                         self.device_config.refresh_info = RefreshInfo(**refresh_info)
                         self.device_config.write_config()
+
+                    refresh_action = None
+                    with self.condition:
+                        if self.manual_update_request:
+                            logger.info("Manual update requested (queued while previous refresh was running)")
+                            refresh_action = self.manual_update_request
+                            self.manual_update_request = ()
+                            latest_refresh = self.device_config.get_refresh_info()
+                            current_dt = self._get_current_datetime()
 
             except Exception as e:
                 logger.exception('Exception during refresh')

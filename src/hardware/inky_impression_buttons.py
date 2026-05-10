@@ -230,9 +230,10 @@ class InkyImpressionButtons:
                         else:
                             logger.debug("gpiod edge for unmapped line offset %s", off)
                 except Exception:
-                    if not self._gpiod_stop.is_set():
-                        logger.exception("Hardware button gpiod poll failed.")
-                    break
+                    if self._gpiod_stop.is_set():
+                        break
+                    logger.exception("Hardware button gpiod poll error; retrying after short delay.")
+                    time.sleep(0.5)
 
         self._gpiod_thread = threading.Thread(
             target=_poll,
