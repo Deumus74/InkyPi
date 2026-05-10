@@ -2,7 +2,7 @@ from flask import Blueprint, request, jsonify, current_app, render_template
 from utils.time_utils import calculate_seconds
 from utils.device_config_normalize import hardware_button_claims_first_win
 from model import HARDWARE_BUTTON_LABELS
-from hardware.inky_impression_buttons import restart_hardware_buttons_if_active
+from hardware.inky_impression_buttons import schedule_hardware_buttons_restart
 import json
 from datetime import datetime, timedelta
 import os
@@ -102,7 +102,7 @@ def playlists():
     )
 
 
-@playlist_bp.route("/set_instance_hardware_button", methods=["PUT"])
+@playlist_bp.route("/set_instance_hardware_button", methods=["POST", "PUT"])
 def set_instance_hardware_button():
     device_config = current_app.config["DEVICE_CONFIG"]
     playlist_manager = device_config.get_playlist_manager()
@@ -140,7 +140,7 @@ def set_instance_hardware_button():
 
     refresh_task = current_app.config["REFRESH_TASK"]
     refresh_task.signal_config_change()
-    restart_hardware_buttons_if_active()
+    schedule_hardware_buttons_restart()
 
     return jsonify({"success": True, "message": "Hardware button updated."})
 

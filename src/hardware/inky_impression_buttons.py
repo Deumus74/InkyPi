@@ -30,8 +30,19 @@ def set_active_button_controller(controller):
 def restart_hardware_buttons_if_active():
     ctrl = _active_controller
     if ctrl:
-        ctrl.stop()
-        ctrl.start()
+        ctrl.restart_handlers()
+
+
+def schedule_hardware_buttons_restart():
+    """Run GPIO teardown/setup off the HTTP worker — avoids blocking Flask/Waitress."""
+
+    def _run():
+        try:
+            restart_hardware_buttons_if_active()
+        except Exception:
+            logger.exception("Hardware button GPIO restart failed.")
+
+    threading.Thread(target=_run, daemon=True, name="inky-hw-btn-restart").start()
 
 
 class InkyImpressionButtons:
@@ -43,6 +54,12 @@ class InkyImpressionButtons:
         self.dev_mode = dev_mode
         self._buttons = []
         self._press_lock = threading.Lock()
+        self._lifecycle_lock = threading.Lock()
+
+    def restart_handlers(self):
+        with self._lifecycle_lock:
+            self.stop()
+            self.start()
 
     def start(self):
         if self.dev_mode:

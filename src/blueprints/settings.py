@@ -2,7 +2,7 @@ from flask import Blueprint, request, jsonify, current_app, render_template, Res
 from utils.time_utils import calculate_seconds
 from datetime import datetime, timedelta
 from model import PLAYLIST_SCHEDULE_MODES, PLAYLIST_SCHEDULE_MODE_SCHEDULE_ONLY
-from hardware.inky_impression_buttons import restart_hardware_buttons_if_active
+from hardware.inky_impression_buttons import schedule_hardware_buttons_restart
 import os
 import pytz
 import logging
@@ -87,7 +87,7 @@ def save_settings():
 
         if plugin_cycle_interval_seconds != previous_interval_seconds or playlist_schedule_mode != previous_mode:
             refresh_task.signal_config_change()
-        restart_hardware_buttons_if_active()
+        schedule_hardware_buttons_restart()
     except RuntimeError as e:
         return jsonify({"error": str(e)}), 500
     except Exception as e:

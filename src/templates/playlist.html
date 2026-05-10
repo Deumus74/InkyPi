@@ -378,7 +378,7 @@
             const value = selectEl.value || "";
             try {
                 const response = await fetch("{{ url_for('playlist.set_instance_hardware_button') }}", {
-                    method: "PUT",
+                    method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
                         playlist_name: playlistName,
@@ -387,9 +387,17 @@
                         hardware_button: value || null,
                     }),
                 });
-                const result = await response.json();
+                const raw = await response.text();
+                let result = {};
+                try {
+                    result = raw ? JSON.parse(raw) : {};
+                } catch (parseErr) {
+                    showResponseModal("failure", `Server replied ${response.status}: ${raw.slice(0, 200)}`);
+                    selectEl.value = prev;
+                    return;
+                }
                 if (!response.ok) {
-                    showResponseModal("failure", result.error || "Failed to save hardware button");
+                    showResponseModal("failure", result.error || `Failed (${response.status})`);
                     selectEl.value = prev;
                     return;
                 }
