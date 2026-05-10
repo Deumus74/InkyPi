@@ -4,8 +4,5 @@
     "inverted_image": false,
     "scheduler_sleep_time": 60,
     "startup": true,
-    "hardware_buttons": {
-        "enabled": false,
-        "bindings": []
-    }
+    "hardware_buttons": {}
 }

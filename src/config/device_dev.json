@@ -38,7 +38,8 @@
                 "current_plugin_index": null
             }
         ],
-        "active_playlist": null
+        "active_playlist": null,
+        "playlist_schedule_mode": "schedule_only"
     },
     "refresh_info": {
         "refresh_time": null,

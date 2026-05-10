@@ -3,6 +3,7 @@ import json
 import logging
 from dotenv import load_dotenv
 from model import PlaylistManager, RefreshInfo
+from utils.device_config_normalize import normalize_device_config
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,8 @@ class Config:
         logger.debug(f"Reading device config from {self.config_file}")
         with open(self.config_file) as f:
             config = json.load(f)
+
+        normalize_device_config(config)
 
         logger.debug("Loaded config:\n%s", json.dumps(config, indent=3))
 
